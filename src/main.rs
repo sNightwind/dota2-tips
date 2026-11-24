@@ -1,4 +1,10 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod catalog;
+mod config;
+mod heroes;
+mod model;
+mod ui;
 
 use catalog::{auth_matches, game_state, Catalog};
 use serde_json::Value;
@@ -23,6 +29,7 @@ struct Options {
     out_dir: PathBuf,
     save_all: bool,
     self_test: bool,
+    capture: bool,
 }
 
 fn main() -> ExitCode {
@@ -44,6 +51,16 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
                 eprintln!("自检失败：{message}");
+                ExitCode::from(1)
+            }
+        };
+    }
+
+    if !options.capture && !options.save_all {
+        return match ui::run(options.bind, options.token) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("{message}");
                 ExitCode::from(1)
             }
         };
@@ -220,6 +237,7 @@ fn run_self_test() -> Result<(), String> {
         out_dir,
         save_all: false,
         self_test: false,
+        capture: false,
     };
     let out_dir = options.out_dir.clone();
     thread::spawn(move || {
@@ -296,12 +314,14 @@ impl Options {
             out_dir: PathBuf::from(DEFAULT_OUT),
             save_all: false,
             self_test: false,
+            capture: false,
         };
         let mut args = env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--save-all" => options.save_all = true,
                 "--self-test" => options.self_test = true,
+                "--capture" => options.capture = true,
                 "--bind" => {
                     options.bind = args
                         .next()
@@ -333,7 +353,7 @@ impl Options {
 
 fn help_text() -> String {
     format!(
-        "用法：dota2-tips [--bind {DEFAULT_BIND}] [--token {DEFAULT_TOKEN}] [--out {DEFAULT_OUT}] [--save-all] [--self-test]"
+        "用法：dota2-tips [--bind {DEFAULT_BIND}] [--token {DEFAULT_TOKEN}]\n       dota2-tips --capture [--out {DEFAULT_OUT}] [--save-all] [--self-test]\n对局中按 Ctrl+Shift+F8 打开设置。采集字段仍用 --capture。"
     )
 }
 
