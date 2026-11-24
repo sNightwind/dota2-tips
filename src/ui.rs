@@ -13,6 +13,7 @@ const TEXT: Color32 = Color32::from_rgb(212, 212, 212);
 const MUTED: Color32 = Color32::from_rgb(140, 140, 140);
 const TRACK: Color32 = Color32::from_rgb(46, 46, 46);
 const ACCENT: Color32 = Color32::from_rgb(55, 148, 255);
+const STACK: Color32 = Color32::from_rgb(230, 180, 60);
 
 pub fn run(bind: String, token: String) -> Result<(), String> {
     let path = config::beside_exe();
@@ -96,7 +97,6 @@ struct TipsApp {
     hotkey: Option<GlobalHotKeyManager>,
     hotkey_error: Option<String>,
     save_error: Option<String>,
-    repair_note: Option<String>,
 }
 
 impl TipsApp {
@@ -115,7 +115,6 @@ impl TipsApp {
             hotkey,
             hotkey_error,
             save_error: None,
-            repair_note: None,
         }
     }
 
@@ -197,6 +196,9 @@ impl TipsApp {
                 TEXT,
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(self.tr("退出", "Quit")).clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
                 let label = if self.settings {
                     self.tr("关闭", "Close")
                 } else {
@@ -241,6 +243,24 @@ impl TipsApp {
             self.config.rules.camp_first_sec as f64,
             self.config.rules.camp_interval_sec as f64,
         );
+        if self.config.bars.stack.enabled {
+            if let Some(window) = model::stack_window(
+                now,
+                self.config.rules.camp_first_sec as f64,
+                self.config.rules.camp_interval_sec as f64,
+                self.config.rules.stack_left_sec as f64,
+                self.config.rules.stack_right_sec as f64,
+            ) {
+                meter(
+                    ui,
+                    self.tr("拉野", "Stack"),
+                    window.remaining,
+                    window.total,
+                    if window.inside { STACK } else { ACCENT },
+                    None,
+                );
+            }
+        }
         self.rule_bar(
             ui,
             &self.config.bars.bounty,
@@ -260,6 +280,7 @@ impl TipsApp {
                     self.tr("中路圣水", "River water"),
                     remaining,
                     total,
+                    ACCENT,
                     None,
                 );
             }
@@ -279,13 +300,7 @@ impl TipsApp {
             for item in &live.items {
                 let remaining = item.remaining_now(paused);
                 let title = heroes::display_item(&item.name);
-                meter(
-                    ui,
-                    &title,
-                    remaining,
-                    item.max,
-                    Some(ready),
-                );
+                meter(ui, &title, remaining, item.max, ACCENT, Some(ready));
             }
         }
         self.enemy_column(ui, live, now);
@@ -313,10 +328,22 @@ impl TipsApp {
             if live.missing.is_empty() {
                 ui.label(RichText::new(self.tr("当前没有", "None")).color(MUTED));
             } else {
-                for hero in &live.missing {
-                    let name = heroes::display_hero(&hero.unit, &self.config.language, &self.config.hero_name);
-                    let gone = (now - hero.gone_at).max(0.0).floor() as i64;
-                    ui.label(RichText::new(format!("{name}  {gone}s")).color(TEXT));
+                let due: Vec<_> = live
+                    .missing
+                    .iter()
+                    .filter(|hero| (now - hero.gone_at).max(0.0) >= f64::from(enemies.missing_after_sec))
+                    .collect();
+                if due.is_empty() {
+                    ui.label(RichText::new(self.tr("当前没有", "None")).color(MUTED));
+                } else {
+                    for hero in due {
+                        let name = heroes::display_hero(&hero.unit, &self.config.language, &self.config.hero_name);
+                        let gone = (now - hero.gone_at).max(0.0).floor() as i64;
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(name).color(STACK));
+                            ui.label(RichText::new(format!("{gone}s")).color(MUTED));
+                        });
+                    }
                 }
             }
         }
@@ -327,7 +354,7 @@ impl TipsApp {
             return;
         }
         let (remaining, total) = model::cycle_remaining(clock, first, interval);
-        meter(ui, title, remaining, total, None);
+        meter(ui, title, remaining, total, ACCENT, None);
     }
 
     fn settings_view(&mut self, ui: &mut egui::Ui) {
@@ -380,6 +407,7 @@ impl TipsApp {
         );
 
         self.bar_editor(ui, self.tr("野怪", "Camps"), |config| &mut config.bars.camp);
+        self.bar_editor(ui, self.tr("拉野", "Stack"), |config| &mut config.bars.stack);
         self.bar_editor(ui, self.tr("野区赏金", "Jungle bounty"), |config| &mut config.bars.bounty);
         self.bar_editor(ui, self.tr("中路圣水", "River water"), |config| &mut config.bars.water);
         self.bar_editor(ui, self.tr("中路神符", "Power rune"), |config| &mut config.bars.power);
@@ -396,6 +424,15 @@ impl TipsApp {
                 self.persist();
             }
         });
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(self.tr("消失超过", "Missing after")).color(TEXT));
+            let suffix = self.tr(" 秒", " s");
+            let value = &mut self.config.bars.enemies.missing_after_sec;
+            let response = ui.add(egui::DragValue::new(value).range(0u32..=600).suffix(suffix));
+            if response.changed() {
+                self.persist();
+            }
+        });
         ui.label(
             RichText::new(self.tr(
                 "7.42：野区赏金每 4 分钟。中路 2:00 和 4:00 两侧圣水，6:00 起每 2 分钟随机一侧一枚神符。",
@@ -409,6 +446,8 @@ impl TipsApp {
         ui.label(RichText::new(self.tr("刷新周期（秒）", "Cycles (seconds)")).color(MUTED).size(12.0));
         self.rule_field(ui, self.tr("野怪首次", "Camp first"), |rules| &mut rules.camp_first_sec);
         self.rule_field(ui, self.tr("野怪间隔", "Camp every"), |rules| &mut rules.camp_interval_sec);
+        self.rule_field(ui, self.tr("拉野左边界", "Stack from"), |rules| &mut rules.stack_left_sec);
+        self.rule_field(ui, self.tr("拉野右边界", "Stack to"), |rules| &mut rules.stack_right_sec);
         self.rule_field(ui, self.tr("赏金首次", "Bounty first"), |rules| &mut rules.bounty_first_sec);
         self.rule_field(ui, self.tr("赏金间隔", "Bounty every"), |rules| &mut rules.bounty_interval_sec);
         self.rule_field(ui, self.tr("圣水第一次", "Water first"), |rules| &mut rules.water_first_sec);
@@ -416,27 +455,6 @@ impl TipsApp {
         self.rule_field(ui, self.tr("神符首次", "Power first"), |rules| &mut rules.power_first_sec);
         self.rule_field(ui, self.tr("神符间隔", "Power every"), |rules| &mut rules.power_interval_sec);
 
-        if ui.button(self.tr("修复配置", "Repair config")).clicked() {
-            match config::repair(&self.path) {
-                Ok((config, changed)) => {
-                    self.config = config;
-                    self.repair_note = Some(
-                        self.tr(
-                            if changed { "配置已修复" } else { "配置无需修复" },
-                            if changed { "Config repaired" } else { "Config is current" },
-                        )
-                        .to_string(),
-                    );
-                    self.save_error = None;
-                }
-                Err(error) => {
-                    self.save_error = Some(error);
-                }
-            }
-        }
-        if let Some(note) = &self.repair_note {
-            ui.label(RichText::new(note).color(MUTED).size(12.0));
-        }
         if let Some(error) = &self.save_error {
             ui.label(RichText::new(error).color(Color32::from_rgb(220, 120, 120)));
         }
@@ -444,9 +462,6 @@ impl TipsApp {
         ui.horizontal(|ui| {
             if ui.button(self.tr("关闭设置", "Close")).clicked() {
                 self.settings = false;
-            }
-            if ui.button(self.tr("退出", "Quit")).clicked() {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
     }
@@ -473,7 +488,14 @@ impl TipsApp {
     }
 }
 
-fn meter(ui: &mut egui::Ui, title: &str, remaining: f64, total: f64, ready: Option<&str>) {
+fn meter(
+    ui: &mut egui::Ui,
+    title: &str,
+    remaining: f64,
+    total: f64,
+    accent: Color32,
+    ready: Option<&str>,
+) {
     if remaining <= 0.05 {
         if let Some(ready) = ready {
             ui.horizontal(|ui| {
@@ -491,10 +513,10 @@ fn meter(ui: &mut egui::Ui, title: &str, remaining: f64, total: f64, ready: Opti
             ui.label(RichText::new(format_remaining(remaining)).color(MUTED));
         });
     });
-    bar_icon(ui, model::ratio(remaining, total));
+    bar_icon(ui, model::ratio(remaining, total), accent);
 }
 
-fn bar_icon(ui: &mut egui::Ui, ratio: f32) {
+fn bar_icon(ui: &mut egui::Ui, ratio: f32, accent: Color32) {
     let width = ui.available_width().max(80.0);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 6.0), egui::Sense::hover());
     let painter = ui.painter();
@@ -502,7 +524,7 @@ fn bar_icon(ui: &mut egui::Ui, ratio: f32) {
     let mut fill = rect;
     fill.set_width(rect.width() * ratio.clamp(0.0, 1.0));
     if fill.width() > 0.0 {
-        painter.rect_filled(fill, 3.0, ACCENT);
+        painter.rect_filled(fill, 3.0, accent);
     }
 }
 

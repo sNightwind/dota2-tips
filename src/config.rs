@@ -22,6 +22,7 @@ pub struct Bars {
     pub bounty: BarCfg,
     pub water: BarCfg,
     pub power: BarCfg,
+    pub stack: BarCfg,
     pub items: BarCfg,
     pub enemies: EnemyCfg,
 }
@@ -37,6 +38,7 @@ pub struct BarCfg {
 pub struct EnemyCfg {
     pub visible: bool,
     pub missing: bool,
+    pub missing_after_sec: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,6 +52,8 @@ pub struct Rules {
     pub water_second_sec: u32,
     pub power_first_sec: u32,
     pub power_interval_sec: u32,
+    pub stack_left_sec: u32,
+    pub stack_right_sec: u32,
 }
 
 impl Default for Config {
@@ -71,10 +75,12 @@ impl Default for Bars {
             bounty: BarCfg::on(),
             water: BarCfg::on(),
             power: BarCfg::on(),
+            stack: BarCfg::on(),
             items: BarCfg::on(),
             enemies: EnemyCfg {
                 visible: true,
                 missing: true,
+                missing_after_sec: 5,
             },
         }
     }
@@ -97,6 +103,7 @@ impl Default for EnemyCfg {
         Self {
             visible: true,
             missing: true,
+            missing_after_sec: 5,
         }
     }
 }
@@ -112,6 +119,8 @@ impl Default for Rules {
             water_second_sec: 240,
             power_first_sec: 360,
             power_interval_sec: 120,
+            stack_left_sec: 53,
+            stack_right_sec: 55,
         }
     }
 }
@@ -167,6 +176,9 @@ fn normalize(config: &mut Config) {
     }
     if !matches!(config.hero_name.as_str(), "full" | "short" | "both") {
         config.hero_name = "full".to_string();
+    }
+    if config.rules.stack_left_sec > config.rules.stack_right_sec {
+        std::mem::swap(&mut config.rules.stack_left_sec, &mut config.rules.stack_right_sec);
     }
     if config.schema < 2 {
         config.rules.bounty_first_sec = 0;

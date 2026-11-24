@@ -47,7 +47,7 @@ pub struct MissingHero {
 #[derive(Debug, Clone)]
 pub struct Live {
     pub seen_payload: bool,
-    pub last_packet: Option<Instant>,
+    pub last_live_packet: Option<Instant>,
     pub in_match: bool,
     pub clock: Option<Clock>,
     pub visible: Vec<String>,
@@ -59,7 +59,7 @@ impl Default for Live {
     fn default() -> Self {
         Self {
             seen_payload: false,
-            last_packet: None,
+            last_live_packet: None,
             in_match: false,
             clock: None,
             visible: Vec::new(),
@@ -71,12 +71,11 @@ impl Default for Live {
 
 impl Live {
     pub fn showing_match(&self) -> bool {
-        self.in_match && self.last_packet.is_some_and(|at| at.elapsed() < STALE)
+        self.in_match && self.last_live_packet.is_some_and(|at| at.elapsed() < STALE)
     }
 
     pub fn apply(&mut self, value: &Value) {
         self.seen_payload = true;
-        self.last_packet = Some(Instant::now());
         if let Some(map) = value.get("map").filter(|map| map.is_object()) {
             if let Some(clock) = map.get("clock_time").and_then(Value::as_f64) {
                 let paused = map.get("paused").and_then(Value::as_bool).unwrap_or(false);
@@ -101,6 +100,9 @@ impl Live {
                     self.items.clear();
                 }
                 self.in_match = live_now;
+                if live_now {
+                    self.last_live_packet = Some(Instant::now());
+                }
             }
         }
         if !self.in_match {
@@ -141,6 +143,32 @@ pub fn is_live_match(state: &str) -> bool {
         state,
         "DOTA_GAMERULES_STATE_PRE_GAME" | "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StackWindow {
+    pub remaining: f64,
+    pub total: f64,
+    pub inside: bool,
+}
+
+/// 拉野条挂在每轮野怪刷新上。第一波野怪出现后才显示，走到右边界后消失，下一轮开始再出现。
+pub fn stack_window(clock: f64, first: f64, interval: f64, left: f64, right: f64) -> Option<StackWindow> {
+    let interval = interval.max(1.0);
+    if clock < first {
+        return None;
+    }
+    let left = left.max(0.0).min(interval);
+    let right = right.max(left).min(interval);
+    let offset = (clock - first) % interval;
+    if offset >= right {
+        return None;
+    }
+    Some(StackWindow {
+        remaining: right - offset,
+        total: right.max(1.0),
+        inside: offset >= left,
+    })
 }
 
 pub fn water_remaining(clock: f64, first: f64, second: f64) -> Option<(f64, f64)> {
@@ -354,5 +382,30 @@ mod tests {
         let (remaining, _) = water_remaining(150.0, 120.0, 240.0).unwrap();
         assert!((remaining - 90.0).abs() < 0.001);
         assert!(water_remaining(240.0, 120.0, 240.0).is_none());
+    }
+
+    #[test]
+    fn heartbeat_without_a_live_state_does_not_keep_the_match() {
+        let mut live = Live::default();
+        live.apply(&json!({
+            "map": {"clock_time": 100, "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"}
+        }));
+        let marked = live.last_live_packet;
+        live.apply(&json!({"provider": {"name": "Dota 2"}}));
+        assert_eq!(live.last_live_packet, marked);
+        live.last_live_packet = Some(Instant::now() - Duration::from_secs(5));
+        assert!(!live.showing_match());
+    }
+
+    #[test]
+    fn stack_window_follows_each_camp_cycle() {
+        assert!(stack_window(30.0, 60.0, 60.0, 53.0, 55.0).is_none());
+        let early = stack_window(70.0, 60.0, 60.0, 53.0, 55.0).unwrap();
+        assert!(!early.inside);
+        assert!((early.remaining - 45.0).abs() < 0.001);
+        let pulling = stack_window(114.0, 60.0, 60.0, 53.0, 55.0).unwrap();
+        assert!(pulling.inside);
+        assert!(stack_window(116.0, 60.0, 60.0, 53.0, 55.0).is_none());
+        assert!(stack_window(120.0, 60.0, 60.0, 53.0, 55.0).is_some());
     }
 }
