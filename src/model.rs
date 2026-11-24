@@ -1,5 +1,7 @@
 use serde_json::Value;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const STALE: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone)]
 pub struct Clock {
@@ -37,10 +39,19 @@ impl ItemCd {
 }
 
 #[derive(Debug, Clone)]
+pub struct MissingHero {
+    pub unit: String,
+    pub gone_at: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct Live {
     pub seen_payload: bool,
+    pub last_packet: Option<Instant>,
+    pub in_match: bool,
     pub clock: Option<Clock>,
-    pub enemies: Vec<String>,
+    pub visible: Vec<String>,
+    pub missing: Vec<MissingHero>,
     pub items: Vec<ItemCd>,
 }
 
@@ -48,23 +59,32 @@ impl Default for Live {
     fn default() -> Self {
         Self {
             seen_payload: false,
+            last_packet: None,
+            in_match: false,
             clock: None,
-            enemies: Vec::new(),
+            visible: Vec::new(),
+            missing: Vec::new(),
             items: Vec::new(),
         }
     }
 }
 
 impl Live {
+    pub fn showing_match(&self) -> bool {
+        self.in_match && self.last_packet.is_some_and(|at| at.elapsed() < STALE)
+    }
+
     pub fn apply(&mut self, value: &Value) {
         self.seen_payload = true;
+        self.last_packet = Some(Instant::now());
         if let Some(map) = value.get("map").filter(|map| map.is_object()) {
             if let Some(clock) = map.get("clock_time").and_then(Value::as_f64) {
                 let paused = map.get("paused").and_then(Value::as_bool).unwrap_or(false);
                 let previous = self.clock.as_ref().map(|clock| clock.sample);
                 let jumped_back = previous.is_some_and(|old| clock + 10.0 < old);
                 if jumped_back {
-                    self.enemies.clear();
+                    self.visible.clear();
+                    self.missing.clear();
                     self.items.clear();
                 }
                 self.clock = Some(Clock {
@@ -73,14 +93,64 @@ impl Live {
                     paused,
                 });
             }
+            if let Some(state) = map.get("game_state").and_then(Value::as_str) {
+                let live_now = is_live_match(state);
+                if live_now != self.in_match {
+                    self.visible.clear();
+                    self.missing.clear();
+                    self.items.clear();
+                }
+                self.in_match = live_now;
+            }
+        }
+        if !self.in_match {
+            self.visible.clear();
+            self.missing.clear();
+            self.items.clear();
+            return;
         }
         if let Some(minimap) = value.get("minimap").filter(|value| value.is_object()) {
-            self.enemies = enemy_units(minimap);
+            let now = self.clock.as_ref().map(|clock| clock.sample).unwrap_or(0.0);
+            self.note_enemies(enemy_units(minimap), now);
         }
         if let Some(items) = value.get("items").filter(|value| value.is_object()) {
             self.items = item_cooldowns(items);
         }
     }
+
+    fn note_enemies(&mut self, current: Vec<String>, game_now: f64) {
+        self.missing.retain(|hero| !current.iter().any(|unit| unit == &hero.unit));
+        for unit in &self.visible {
+            if current.iter().any(|name| name == unit) {
+                continue;
+            }
+            if self.missing.iter().any(|hero| hero.unit == *unit) {
+                continue;
+            }
+            self.missing.push(MissingHero {
+                unit: unit.clone(),
+                gone_at: game_now,
+            });
+        }
+        self.visible = current;
+    }
+}
+
+pub fn is_live_match(state: &str) -> bool {
+    matches!(
+        state,
+        "DOTA_GAMERULES_STATE_PRE_GAME" | "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"
+    )
+}
+
+pub fn water_remaining(clock: f64, first: f64, second: f64) -> Option<(f64, f64)> {
+    if clock < first {
+        return Some(((first - clock).max(0.0), first.max(1.0)));
+    }
+    if clock < second {
+        return Some(((second - clock).max(0.0), (second - first).max(1.0)));
+    }
+    None
 }
 
 pub fn cycle_remaining(clock: f64, first: f64, interval: f64) -> (f64, f64) {
@@ -200,6 +270,7 @@ mod tests {
     #[test]
     fn enemies_keep_only_enemy_icons() {
         let value = json!({
+            "map": {"clock_time": 30, "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS", "paused": false},
             "minimap": {
                 "o1": {"image": "minimap_plaincircle", "unitname": "", "team": 0},
                 "o2": {"image": "minimap_herocircle_self", "unitname": "npc_dota_hero_storm_spirit"},
@@ -218,7 +289,7 @@ mod tests {
         let mut live = Live::default();
         live.apply(&value);
         assert_eq!(
-            live.enemies,
+            live.visible,
             vec!["npc_dota_hero_zuus".to_string(), "npc_dota_hero_axe".to_string()]
         );
         assert_eq!(live.items.len(), 2);
@@ -229,9 +300,59 @@ mod tests {
     #[test]
     fn missing_minimap_does_not_clear_enemies() {
         let mut live = Live::default();
-        live.apply(&json!({"minimap": {"o1": {"image": "minimap_enemyicon", "unitname": "npc_dota_hero_axe"}}}));
-        live.apply(&json!({"map": {"clock_time": 10, "paused": true}}));
-        assert_eq!(live.enemies, vec!["npc_dota_hero_axe".to_string()]);
+        live.apply(&json!({
+            "map": {"clock_time": 10, "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS", "paused": false},
+            "minimap": {"o1": {"image": "minimap_enemyicon", "unitname": "npc_dota_hero_axe"}}
+        }));
+        live.apply(&json!({
+            "map": {"clock_time": 12, "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS", "paused": true}
+        }));
+        assert_eq!(live.visible, vec!["npc_dota_hero_axe".to_string()]);
         assert!(live.clock.unwrap().paused);
+    }
+
+    #[test]
+    fn leaving_the_match_stops_the_clock_state() {
+        let mut live = Live::default();
+        live.apply(&json!({
+            "map": {"clock_time": 100, "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS", "paused": false}
+        }));
+        assert!(live.showing_match());
+        live.apply(&json!({
+            "map": {"clock_time": 110, "game_state": "DOTA_GAMERULES_STATE_POST_GAME", "paused": false}
+        }));
+        assert!(!live.showing_match());
+        assert!(live.visible.is_empty());
+    }
+
+    #[test]
+    fn missing_heroes_keep_the_clock_when_they_leave() {
+        let mut live = Live::default();
+        live.apply(&json!({
+            "map": {"clock_time": 80, "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+            "minimap": {"o1": {"image": "minimap_enemyicon", "unitname": "npc_dota_hero_axe"}}
+        }));
+        live.apply(&json!({
+            "map": {"clock_time": 95, "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+            "minimap": {"o1": {"image": "minimap_creep", "unitname": "npc_dota_creep_badguys_melee"}}
+        }));
+        assert!(live.visible.is_empty());
+        assert_eq!(live.missing.len(), 1);
+        assert!((live.missing[0].gone_at - 95.0).abs() < 0.001);
+        live.apply(&json!({
+            "map": {"clock_time": 100, "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+            "minimap": {"o1": {"image": "minimap_enemyicon", "unitname": "npc_dota_hero_axe"}}
+        }));
+        assert!(live.missing.is_empty());
+        assert_eq!(live.visible, vec!["npc_dota_hero_axe".to_string()]);
+    }
+
+    #[test]
+    fn water_runes_cover_only_two_and_four_minutes() {
+        let (remaining, _) = water_remaining(30.0, 120.0, 240.0).unwrap();
+        assert!((remaining - 90.0).abs() < 0.001);
+        let (remaining, _) = water_remaining(150.0, 120.0, 240.0).unwrap();
+        assert!((remaining - 90.0).abs() < 0.001);
+        assert!(water_remaining(240.0, 120.0, 240.0).is_none());
     }
 }

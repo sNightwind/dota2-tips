@@ -1,7 +1,7 @@
 use crate::config::{self, BarCfg, Config};
 use crate::heroes;
 use crate::model::{self, Live};
-use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
+use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use std::sync::{Arc, Mutex};
@@ -16,7 +16,7 @@ const ACCENT: Color32 = Color32::from_rgb(55, 148, 255);
 
 pub fn run(bind: String, token: String) -> Result<(), String> {
     let path = config::beside_exe();
-    let config = config::load_or_create(&path)?;
+    let (config, _) = config::repair(&path)?;
     let live = Arc::new(Mutex::new(Live::default()));
     let server_live = Arc::clone(&live);
     let server_bind = bind.clone();
@@ -96,6 +96,7 @@ struct TipsApp {
     hotkey: Option<GlobalHotKeyManager>,
     hotkey_error: Option<String>,
     save_error: Option<String>,
+    repair_note: Option<String>,
 }
 
 impl TipsApp {
@@ -114,6 +115,7 @@ impl TipsApp {
             hotkey,
             hotkey_error,
             save_error: None,
+            repair_note: None,
         }
     }
 
@@ -217,66 +219,105 @@ impl TipsApp {
     }
 
     fn play_view(&self, ui: &mut egui::Ui, live: &Live) {
-        if !live.seen_payload {
-            ui.label(RichText::new(self.tr("等待 Dota", "Waiting for Dota")).color(MUTED));
+        if !live.showing_match() {
+            let text = if live.seen_payload {
+                self.tr("等待对局", "Waiting for a match")
+            } else {
+                self.tr("等待 Dota", "Waiting for Dota")
+            };
+            ui.label(RichText::new(text).color(MUTED));
+            return;
         }
         let paused = live.clock.as_ref().is_some_and(|clock| clock.paused);
-        if let Some(clock) = &live.clock {
-            let now = clock.game_now();
-            self.rule_bar(
-                ui,
-                &self.config.bars.camp,
-                self.tr("野怪", "Camps"),
+        let Some(clock) = &live.clock else {
+            return;
+        };
+        let now = clock.game_now();
+        self.rule_bar(
+            ui,
+            &self.config.bars.camp,
+            self.tr("野怪", "Camps"),
+            now,
+            self.config.rules.camp_first_sec as f64,
+            self.config.rules.camp_interval_sec as f64,
+        );
+        self.rule_bar(
+            ui,
+            &self.config.bars.bounty,
+            self.tr("野区赏金", "Jungle bounty"),
+            now,
+            self.config.rules.bounty_first_sec as f64,
+            self.config.rules.bounty_interval_sec as f64,
+        );
+        if self.config.bars.water.enabled {
+            if let Some((remaining, total)) = model::water_remaining(
                 now,
-                self.config.rules.camp_first_sec as f64,
-                self.config.rules.camp_interval_sec as f64,
-            );
-            self.rule_bar(
-                ui,
-                &self.config.bars.bounty,
-                self.tr("赏金符", "Bounty"),
-                now,
-                self.config.rules.bounty_first_sec as f64,
-                self.config.rules.bounty_interval_sec as f64,
-            );
-            self.rule_bar(
-                ui,
-                &self.config.bars.power,
-                self.tr("神符", "Power"),
-                now,
-                self.config.rules.power_first_sec as f64,
-                self.config.rules.power_interval_sec as f64,
-            );
-        }
-        if self.config.bars.items.enabled {
-            if !live.items.is_empty() {
-                ui.add_space(6.0);
-                ui.label(RichText::new(self.tr("道具", "Items")).color(MUTED).size(12.0));
+                self.config.rules.water_first_sec as f64,
+                self.config.rules.water_second_sec as f64,
+            ) {
+                meter(
+                    ui,
+                    self.tr("中路圣水", "River water"),
+                    remaining,
+                    total,
+                    None,
+                );
             }
+        }
+        self.rule_bar(
+            ui,
+            &self.config.bars.power,
+            self.tr("中路神符", "Power rune"),
+            now,
+            self.config.rules.power_first_sec as f64,
+            self.config.rules.power_interval_sec as f64,
+        );
+        if self.config.bars.items.enabled && !live.items.is_empty() {
+            ui.add_space(6.0);
+            ui.label(RichText::new(self.tr("道具", "Items")).color(MUTED).size(12.0));
+            let ready = self.tr("已就绪", "Ready");
             for item in &live.items {
                 let remaining = item.remaining_now(paused);
                 let title = heroes::display_item(&item.name);
-                meter(ui, &title, remaining, item.max, self.config.bars.items.is_ring());
+                meter(
+                    ui,
+                    &title,
+                    remaining,
+                    item.max,
+                    Some(ready),
+                );
             }
         }
-        if self.config.bars.enemies.enabled {
+        self.enemy_column(ui, live, now);
+    }
+
+    fn enemy_column(&self, ui: &mut egui::Ui, live: &Live, now: f64) {
+        let enemies = &self.config.bars.enemies;
+        if enemies.visible {
             ui.add_space(6.0);
-            ui.label(RichText::new(self.tr("敌方", "Enemies")).color(MUTED).size(12.0));
-            if live.enemies.is_empty() {
+            ui.label(RichText::new(self.tr("已出现", "Visible")).color(MUTED).size(12.0));
+            if live.visible.is_empty() {
                 ui.label(RichText::new(self.tr("当前没有", "None")).color(MUTED));
             } else {
                 let names: Vec<String> = live
-                    .enemies
+                    .visible
                     .iter()
-                    .map(|unit| {
-                        heroes::display_hero(
-                            unit,
-                            &self.config.language,
-                            &self.config.hero_name,
-                        )
-                    })
+                    .map(|unit| heroes::display_hero(unit, &self.config.language, &self.config.hero_name))
                     .collect();
                 ui.label(RichText::new(names.join("   ")).color(TEXT));
+            }
+        }
+        if enemies.missing {
+            ui.add_space(6.0);
+            ui.label(RichText::new(self.tr("未出现", "Missing")).color(MUTED).size(12.0));
+            if live.missing.is_empty() {
+                ui.label(RichText::new(self.tr("当前没有", "None")).color(MUTED));
+            } else {
+                for hero in &live.missing {
+                    let name = heroes::display_hero(&hero.unit, &self.config.language, &self.config.hero_name);
+                    let gone = (now - hero.gone_at).max(0.0).floor() as i64;
+                    ui.label(RichText::new(format!("{name}  {gone}s")).color(TEXT));
+                }
             }
         }
     }
@@ -286,7 +327,7 @@ impl TipsApp {
             return;
         }
         let (remaining, total) = model::cycle_remaining(clock, first, interval);
-        meter(ui, title, remaining, total, bar.is_ring());
+        meter(ui, title, remaining, total, None);
     }
 
     fn settings_view(&mut self, ui: &mut egui::Ui) {
@@ -305,7 +346,10 @@ impl TipsApp {
         ui.horizontal(|ui| {
             ui.label(RichText::new(self.tr("英雄名", "Hero name")).color(MUTED));
             if ui
-                .selectable_label(!self.config.hero_name_is_short(), self.tr("全名", "Full"))
+                .selectable_label(
+                    !self.config.hero_name_is_short() && !self.config.hero_name_is_both(),
+                    self.tr("全名", "Full"),
+                )
                 .clicked()
             {
                 self.config.hero_name = "full".to_string();
@@ -318,24 +362,48 @@ impl TipsApp {
                 self.config.hero_name = "short".to_string();
                 self.persist();
             }
-        });
-        ui.label(
-            RichText::new(self.tr("幻影刺客的简称是 PA", "Phantom Assassin is shown as PA"))
-                .color(MUTED)
-                .size(12.0),
-        );
-
-        self.bar_editor(ui, self.tr("野怪", "Camps"), |config| &mut config.bars.camp);
-        self.bar_editor(ui, self.tr("赏金符", "Bounty"), |config| &mut config.bars.bounty);
-        self.bar_editor(ui, self.tr("神符", "Power"), |config| &mut config.bars.power);
-        self.bar_editor(ui, self.tr("道具", "Items"), |config| &mut config.bars.items);
-        ui.horizontal(|ui| {
-            let mut enabled = self.config.bars.enemies.enabled;
-            if ui.checkbox(&mut enabled, self.tr("敌方英雄名", "Enemy names")).changed() {
-                self.config.bars.enemies.enabled = enabled;
+            if ui
+                .selectable_label(self.config.hero_name_is_both(), self.tr("全名+简称", "Full+short"))
+                .clicked()
+            {
+                self.config.hero_name = "both".to_string();
                 self.persist();
             }
         });
+        ui.label(
+            RichText::new(self.tr(
+                "全名+简称的例子：幻影刺客PA",
+                "Full+short looks like 幻影刺客PA",
+            ))
+            .color(MUTED)
+            .size(12.0),
+        );
+
+        self.bar_editor(ui, self.tr("野怪", "Camps"), |config| &mut config.bars.camp);
+        self.bar_editor(ui, self.tr("野区赏金", "Jungle bounty"), |config| &mut config.bars.bounty);
+        self.bar_editor(ui, self.tr("中路圣水", "River water"), |config| &mut config.bars.water);
+        self.bar_editor(ui, self.tr("中路神符", "Power rune"), |config| &mut config.bars.power);
+        self.bar_editor(ui, self.tr("道具", "Items"), |config| &mut config.bars.items);
+        ui.horizontal(|ui| {
+            let mut visible = self.config.bars.enemies.visible;
+            if ui.checkbox(&mut visible, self.tr("已出现", "Visible")).changed() {
+                self.config.bars.enemies.visible = visible;
+                self.persist();
+            }
+            let mut missing = self.config.bars.enemies.missing;
+            if ui.checkbox(&mut missing, self.tr("未出现", "Missing")).changed() {
+                self.config.bars.enemies.missing = missing;
+                self.persist();
+            }
+        });
+        ui.label(
+            RichText::new(self.tr(
+                "7.42：野区赏金每 4 分钟。中路 2:00 和 4:00 两侧圣水，6:00 起每 2 分钟随机一侧一枚神符。",
+                "7.42: jungle bounty every 4 min. River water at both spots at 2:00 and 4:00. One power rune every 2 min from 6:00.",
+            ))
+            .color(MUTED)
+            .size(12.0),
+        );
 
         ui.add_space(6.0);
         ui.label(RichText::new(self.tr("刷新周期（秒）", "Cycles (seconds)")).color(MUTED).size(12.0));
@@ -343,9 +411,32 @@ impl TipsApp {
         self.rule_field(ui, self.tr("野怪间隔", "Camp every"), |rules| &mut rules.camp_interval_sec);
         self.rule_field(ui, self.tr("赏金首次", "Bounty first"), |rules| &mut rules.bounty_first_sec);
         self.rule_field(ui, self.tr("赏金间隔", "Bounty every"), |rules| &mut rules.bounty_interval_sec);
+        self.rule_field(ui, self.tr("圣水第一次", "Water first"), |rules| &mut rules.water_first_sec);
+        self.rule_field(ui, self.tr("圣水第二次", "Water second"), |rules| &mut rules.water_second_sec);
         self.rule_field(ui, self.tr("神符首次", "Power first"), |rules| &mut rules.power_first_sec);
         self.rule_field(ui, self.tr("神符间隔", "Power every"), |rules| &mut rules.power_interval_sec);
 
+        if ui.button(self.tr("修复配置", "Repair config")).clicked() {
+            match config::repair(&self.path) {
+                Ok((config, changed)) => {
+                    self.config = config;
+                    self.repair_note = Some(
+                        self.tr(
+                            if changed { "配置已修复" } else { "配置无需修复" },
+                            if changed { "Config repaired" } else { "Config is current" },
+                        )
+                        .to_string(),
+                    );
+                    self.save_error = None;
+                }
+                Err(error) => {
+                    self.save_error = Some(error);
+                }
+            }
+        }
+        if let Some(note) = &self.repair_note {
+            ui.label(RichText::new(note).color(MUTED).size(12.0));
+        }
         if let Some(error) = &self.save_error {
             ui.label(RichText::new(error).color(Color32::from_rgb(220, 120, 120)));
         }
@@ -362,20 +453,9 @@ impl TipsApp {
 
     fn bar_editor(&mut self, ui: &mut egui::Ui, title: &str, field: impl Fn(&mut Config) -> &mut BarCfg) {
         ui.horizontal(|ui| {
-            let enabled_now = field(&mut self.config).enabled;
-            let ring_now = field(&mut self.config).is_ring();
-            let mut enabled = enabled_now;
-            let enabled_changed = ui.checkbox(&mut enabled, title).changed();
-            let rect_clicked = ui.selectable_label(!ring_now, self.tr("矩形", "Bar")).clicked();
-            let ring_clicked = ui.selectable_label(ring_now, self.tr("圆环", "Ring")).clicked();
-            if enabled_changed || rect_clicked || ring_clicked {
-                let bar = field(&mut self.config);
-                bar.enabled = enabled;
-                if rect_clicked {
-                    bar.style = "rect".to_string();
-                } else if ring_clicked {
-                    bar.style = "ring".to_string();
-                }
+            let mut enabled = field(&mut self.config).enabled;
+            if ui.checkbox(&mut enabled, title).changed() {
+                field(&mut self.config).enabled = enabled;
                 self.persist();
             }
         });
@@ -393,19 +473,25 @@ impl TipsApp {
     }
 }
 
-fn meter(ui: &mut egui::Ui, title: &str, remaining: f64, total: f64, ring: bool) {
-    ui.horizontal(|ui| {
-        if ring {
-            ring_icon(ui, model::ratio(remaining, total));
+fn meter(ui: &mut egui::Ui, title: &str, remaining: f64, total: f64, ready: Option<&str>) {
+    if remaining <= 0.05 {
+        if let Some(ready) = ready {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(title).color(TEXT));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(ready).color(ACCENT));
+                });
+            });
+            return;
         }
+    }
+    ui.horizontal(|ui| {
         ui.label(RichText::new(title).color(TEXT));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(RichText::new(format_remaining(remaining)).color(MUTED));
         });
     });
-    if !ring {
-        bar_icon(ui, model::ratio(remaining, total));
-    }
+    bar_icon(ui, model::ratio(remaining, total));
 }
 
 fn bar_icon(ui: &mut egui::Ui, ratio: f32) {
@@ -418,26 +504,6 @@ fn bar_icon(ui: &mut egui::Ui, ratio: f32) {
     if fill.width() > 0.0 {
         painter.rect_filled(fill, 3.0, ACCENT);
     }
-}
-
-fn ring_icon(ui: &mut egui::Ui, ratio: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(16.0, 16.0), egui::Sense::hover());
-    let center = rect.center();
-    let painter = ui.painter();
-    painter.circle_stroke(center, 6.0, Stroke::new(2.0, TRACK));
-    if ratio <= 0.0 {
-        return;
-    }
-    let steps = ((24.0 * ratio).ceil() as usize).max(1);
-    let start = -std::f32::consts::FRAC_PI_2;
-    let sweep = std::f32::consts::TAU * ratio.clamp(0.0, 1.0);
-    let points: Vec<Pos2> = (0..=steps)
-        .map(|step| {
-            let angle = start + sweep * (step as f32 / steps as f32);
-            center + Vec2::new(angle.cos(), angle.sin()) * 6.0
-        })
-        .collect();
-    painter.line(points, Stroke::new(2.0, ACCENT));
 }
 
 fn format_remaining(seconds: f64) -> String {

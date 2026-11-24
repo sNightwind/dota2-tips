@@ -135,21 +135,22 @@ const HEROES: &[Hero] = &[
 
 pub fn display_hero(unit: &str, language: &str, hero_name: &str) -> String {
     let id = unit.strip_prefix("npc_dota_hero_").unwrap_or(unit);
-    if let Some(hero) = HEROES.iter().find(|hero| hero.id == id) {
-        if hero_name == "short" {
-            return initials(hero.en);
-        }
-        return if language == "en" {
+    let (full, short) = if let Some(hero) = HEROES.iter().find(|hero| hero.id == id) {
+        let full = if language == "en" {
             hero.en.to_string()
         } else {
             hero.zh.to_string()
         };
-    }
-    let pretty = prettify(id);
-    if hero_name == "short" {
-        initials(&pretty)
+        (full, initials(hero.en))
     } else {
-        pretty
+        let pretty = prettify(id);
+        let short = initials(&pretty);
+        (pretty, short)
+    };
+    match hero_name {
+        "short" => short,
+        "both" => format!("{full}{short}"),
+        _ => full,
     }
 }
 
@@ -200,5 +201,14 @@ mod tests {
             display_hero("npc_dota_hero_phantom_assassin", "en", "full"),
             "Phantom Assassin"
         );
+        assert_eq!(
+            display_hero("npc_dota_hero_phantom_assassin", "zh", "both"),
+            "幻影刺客PA"
+        );
+        assert_eq!(
+            display_hero("npc_dota_hero_chaos_knight", "zh", "both"),
+            "混沌骑士CK"
+        );
+        assert_eq!(display_hero("npc_dota_hero_dragon_knight", "zh", "both"), "龙骑士DK");
     }
 }
