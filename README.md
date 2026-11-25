@@ -4,13 +4,17 @@
 
 ## 使用
 
-没有 Rust 时，从 [Releases](https://github.com/sNightwind/dota2-tips/releases) 下载 `dota2-tips.exe` 和 `gamestate_integration_dota2_tips.cfg`。
+没有 Rust 时，从 [Releases](https://github.com/sNightwind/dota2-tips/releases) 下载 `dota2-tips.exe`。
 
-把 cfg 复制到 Dota 的 `game/dota/cfg/gamestate_integration/`。Steam 启动项加上 `-gamestateintegration`，完全退出并重新打开 Dota，然后双击 exe。
+打开程序，点右上角「设置」，再点「安装配置」。程序会把 GSI 配置写到 Dota 的 `game/dota/cfg/gamestate_integration/`。Steam 完全退出时，会给 Dota 2 的启动项加上 `-gamestateintegration`。然后重新打开 Steam，完全退出并重新打开 Dota。
+
+若 Steam 正在运行，配置文件仍会写入。启动项要等完全退出 Steam（含托盘图标）后再点一次「安装配置」。「卸载配置」会删除本工具的 cfg，并去掉这个启动参数，其他启动参数保留。自动安装只支持 Windows。
+
+手动安装时，把 `gamestate_integration_dota2_tips.cfg` 复制到上面的目录，Steam 启动项加上 `-gamestateintegration`，完全退出并重新打开 Dota，然后双击 exe。
 
 默认监听 `127.0.0.1:5394`，token 是 `dota2-tips`。第一次运行会在程序旁边写出 `config.toml`。之后每次启动都会按当前版本补上缺的字段、去掉失效字段。
 
-- 右上角「设置」，或按 `Ctrl+Shift+F8`。拖标题栏移动窗口。`Esc` 关闭设置。
+- 右上角「设置」，分成安装、计时、冷却、小地图。拖动面板可以移动窗口，设置展开后也一样。`Esc` 关闭设置。
 - 语言可选中文或英文。英雄名可选全名、简称，或全名加简称，例如幻影刺客PA。
 - 每条倒计时可以单独开关。对局结束、断开或退出游戏后，倒计时停止，显示「等待对局」。
 
@@ -23,5 +27,7 @@
 | 野区赏金 | 0:00 起每 240 秒 |
 | 中路圣水 | 2:00 和 4:00，两侧各一枚 |
 | 中路神符 | 6:00 起每 120 秒，随机一侧一枚 |
+| 莲花池 | 3:00 起每 180 秒 |
+| 智慧神龛 | 7:00 起每 420 秒 |
 
 道具冷却走完后显示「已就绪」。「已出现」是当前小地图上的敌方英雄。「未出现」在离开超过设定秒数后才提示，英雄名为黄色，并显示离开后的秒数。两列可以分别关闭。

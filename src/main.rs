@@ -2,11 +2,12 @@
 
 mod catalog;
 mod config;
+mod dota_setup;
 mod heroes;
 mod model;
 mod ui;
 
-use catalog::{auth_matches, game_state, Catalog};
+use catalog::{Catalog, auth_matches, game_state};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
@@ -143,7 +144,11 @@ fn serve(options: &Options) -> Result<(), String> {
         let leaf_count = count_leaves(&value);
         if leaf_count > richest_leaves.get(&state).copied().unwrap_or(0) {
             richest_leaves.insert(state.clone(), leaf_count);
-            match catalog.lock().expect("catalog lock").save_sample(&out_dir, &state, &value) {
+            match catalog
+                .lock()
+                .expect("catalog lock")
+                .save_sample(&out_dir, &state, &value)
+            {
                 Ok(path) => println!("已更新样本 {}", path.display()),
                 Err(error) => eprintln!("写入样本失败：{error}"),
             }
@@ -190,7 +195,10 @@ fn marker(value: &Value) -> String {
         .pointer("/map/clock_time")
         .map(ToString::to_string)
         .unwrap_or_else(|| "-".to_string());
-    let hero = value.pointer("/hero/name").and_then(Value::as_str).unwrap_or("-");
+    let hero = value
+        .pointer("/hero/name")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
     format!("状态={state}  时钟={clock}  英雄={hero}")
 }
 
@@ -323,9 +331,9 @@ impl Options {
                 "--self-test" => options.self_test = true,
                 "--capture" => options.capture = true,
                 "--bind" => {
-                    options.bind = args
-                        .next()
-                        .ok_or_else(|| ArgError::Message("--bind 需要一个地址，例如 127.0.0.1:5394".to_string()))?;
+                    options.bind = args.next().ok_or_else(|| {
+                        ArgError::Message("--bind 需要一个地址，例如 127.0.0.1:5394".to_string())
+                    })?;
                 }
                 "--token" => {
                     options.token = args
@@ -353,7 +361,7 @@ impl Options {
 
 fn help_text() -> String {
     format!(
-        "用法：dota2-tips [--bind {DEFAULT_BIND}] [--token {DEFAULT_TOKEN}]\n       dota2-tips --capture [--out {DEFAULT_OUT}] [--save-all] [--self-test]\n对局中按 Ctrl+Shift+F8 打开设置。采集字段仍用 --capture。"
+        "用法：dota2-tips [--bind {DEFAULT_BIND}] [--token {DEFAULT_TOKEN}]\n       dota2-tips --capture [--out {DEFAULT_OUT}] [--save-all] [--self-test]\n点窗口右上角「设置」，可在里面安装或卸载 Dota 配置。采集字段仍用 --capture。"
     )
 }
 

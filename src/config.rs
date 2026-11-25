@@ -11,6 +11,8 @@ pub struct Config {
     pub schema: u32,
     pub language: String,
     pub hero_name: String,
+    /// 计时进度条剩余低于该秒数时变黄。0 表示关闭。道具冷却保持蓝色。
+    pub warn_under_sec: u32,
     pub bars: Bars,
     pub rules: Rules,
 }
@@ -22,6 +24,8 @@ pub struct Bars {
     pub bounty: BarCfg,
     pub water: BarCfg,
     pub power: BarCfg,
+    pub lotus: BarCfg,
+    pub wisdom: BarCfg,
     pub stack: BarCfg,
     pub items: BarCfg,
     pub enemies: EnemyCfg,
@@ -52,6 +56,10 @@ pub struct Rules {
     pub water_second_sec: u32,
     pub power_first_sec: u32,
     pub power_interval_sec: u32,
+    pub lotus_first_sec: u32,
+    pub lotus_interval_sec: u32,
+    pub wisdom_first_sec: u32,
+    pub wisdom_interval_sec: u32,
     pub stack_left_sec: u32,
     pub stack_right_sec: u32,
 }
@@ -62,6 +70,7 @@ impl Default for Config {
             schema: CURRENT_SCHEMA,
             language: "zh".to_string(),
             hero_name: "full".to_string(),
+            warn_under_sec: 10,
             bars: Bars::default(),
             rules: Rules::default(),
         }
@@ -75,6 +84,8 @@ impl Default for Bars {
             bounty: BarCfg::on(),
             water: BarCfg::on(),
             power: BarCfg::on(),
+            lotus: BarCfg::on(),
+            wisdom: BarCfg::on(),
             stack: BarCfg::on(),
             items: BarCfg::on(),
             enemies: EnemyCfg {
@@ -119,6 +130,10 @@ impl Default for Rules {
             water_second_sec: 240,
             power_first_sec: 360,
             power_interval_sec: 120,
+            lotus_first_sec: 180,
+            lotus_interval_sec: 180,
+            wisdom_first_sec: 420,
+            wisdom_interval_sec: 420,
             stack_left_sec: 53,
             stack_right_sec: 55,
         }
@@ -139,7 +154,7 @@ impl Config {
     }
 }
 
-const CURRENT_SCHEMA: u32 = 3;
+const CURRENT_SCHEMA: u32 = 4;
 
 pub fn beside_exe() -> PathBuf {
     std::env::current_exe()
@@ -161,7 +176,8 @@ pub fn repair(path: &Path) -> Result<(Config, bool), String> {
         return Ok((config, true));
     }
     let text = fs::read_to_string(path).map_err(|error| format!("无法读取配置：{error}"))?;
-    let mut config: Config = toml::from_str(&text).map_err(|error| format!("配置无法解析：{error}"))?;
+    let mut config: Config =
+        toml::from_str(&text).map_err(|error| format!("配置无法解析：{error}"))?;
     normalize(&mut config);
     let changed = stored_value(&text)? != stored_value(&render(&config)?)?;
     if changed {
@@ -177,8 +193,12 @@ fn normalize(config: &mut Config) {
     if !matches!(config.hero_name.as_str(), "full" | "short" | "both") {
         config.hero_name = "full".to_string();
     }
+    config.warn_under_sec = config.warn_under_sec.min(600);
     if config.rules.stack_left_sec > config.rules.stack_right_sec {
-        std::mem::swap(&mut config.rules.stack_left_sec, &mut config.rules.stack_right_sec);
+        std::mem::swap(
+            &mut config.rules.stack_left_sec,
+            &mut config.rules.stack_right_sec,
+        );
     }
     if config.schema < 2 {
         config.rules.bounty_first_sec = 0;
@@ -187,6 +207,12 @@ fn normalize(config: &mut Config) {
         config.rules.water_second_sec = 240;
         config.rules.power_first_sec = 360;
         config.rules.power_interval_sec = 120;
+    }
+    if config.schema < 4 {
+        config.rules.lotus_first_sec = 180;
+        config.rules.lotus_interval_sec = 180;
+        config.rules.wisdom_first_sec = 420;
+        config.rules.wisdom_interval_sec = 420;
     }
     config.schema = CURRENT_SCHEMA;
 }
@@ -202,7 +228,7 @@ fn render(config: &Config) -> Result<String, String> {
 pub fn save(path: &Path, config: &Config) -> Result<(), String> {
     let body = render(config)?;
     let text = format!(
-        "# dota2-tips 玩家配置。设置界面会写回这个文件。\n# language: zh 或 en。hero_name: full、short 或 both。\n# 7.42：野区赏金 0:00 起每 240 秒；中路圣水 120 与 240 秒，两侧各一；中路神符 360 秒起每 120 秒，随机一侧一枚。\n\n{body}"
+        "# dota2-tips 玩家配置。设置界面会写回这个文件。\n# language: zh 或 en。hero_name: full、short 或 both。\n# warn_under_sec: 计时条剩余低于该秒数时变黄。0 表示关闭。道具冷却保持蓝色。\n# 7.42：野区赏金 0:00 起每 240 秒；中路圣水 120 与 240 秒；中路神符 360 秒起每 120 秒。\n# 莲花池 180 秒起每 180 秒一朵；智慧神龛 420 秒起每 420 秒激活一次。\n\n{body}"
     );
     write_atomic(path, text.as_bytes()).map_err(|error| format!("无法写入配置：{error}"))
 }
@@ -232,7 +258,12 @@ mod tests {
         let partial: Config = toml::from_str("language = \"en\"\n").unwrap();
         assert_eq!(partial.language, "en");
         assert!(partial.bars.camp.enabled);
+        assert_eq!(partial.warn_under_sec, 10);
         assert_eq!(partial.rules.power_first_sec, 360);
+        assert_eq!(partial.rules.lotus_first_sec, 180);
+        assert_eq!(partial.rules.wisdom_interval_sec, 420);
+        assert!(partial.bars.lotus.enabled);
+        assert!(partial.bars.wisdom.enabled);
     }
 
     #[test]
@@ -251,9 +282,29 @@ mod tests {
         assert_eq!(config.schema, CURRENT_SCHEMA);
         assert_eq!(config.hero_name, "short");
         assert!(config.bars.water.enabled);
+        assert_eq!(config.rules.lotus_first_sec, 180);
+        assert_eq!(config.rules.wisdom_first_sec, 420);
         let text = fs::read_to_string(&path).unwrap();
         assert!(!text.contains("style"));
         let (_, again) = repair(&path).unwrap();
         assert!(!again);
+    }
+
+    #[test]
+    fn older_rules_gain_lotus_and_wisdom_times() {
+        let mut config: Config = toml::from_str(
+            "schema = 3\n[rules]\ncamp_first_sec = 60\ncamp_interval_sec = 60\nbounty_first_sec = 0\nbounty_interval_sec = 240\nwater_first_sec = 120\nwater_second_sec = 240\npower_first_sec = 360\npower_interval_sec = 120\nstack_left_sec = 53\nstack_right_sec = 55\n",
+        )
+        .unwrap();
+        assert_eq!(config.rules.lotus_first_sec, 180);
+        assert_eq!(config.rules.camp_first_sec, 60);
+        normalize(&mut config);
+        assert_eq!(config.schema, CURRENT_SCHEMA);
+        assert_eq!(config.rules.camp_first_sec, 60);
+        assert_eq!(config.rules.lotus_first_sec, 180);
+        assert_eq!(config.rules.lotus_interval_sec, 180);
+        assert_eq!(config.rules.wisdom_first_sec, 420);
+        assert_eq!(config.rules.wisdom_interval_sec, 420);
+        assert!(config.bars.lotus.enabled);
     }
 }

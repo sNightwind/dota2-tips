@@ -29,8 +29,14 @@ impl Catalog {
 
     pub fn write_reports(&self, dir: &Path, latest: &Value) -> io::Result<()> {
         fs::create_dir_all(dir)?;
-        write_atomic(&dir.join("latest.json"), &serde_json::to_vec_pretty(latest).unwrap())?;
-        write_atomic(&dir.join("fields.json"), &serde_json::to_vec_pretty(&self.to_json()).unwrap())?;
+        write_atomic(
+            &dir.join("latest.json"),
+            &serde_json::to_vec_pretty(latest).unwrap(),
+        )?;
+        write_atomic(
+            &dir.join("fields.json"),
+            &serde_json::to_vec_pretty(&self.to_json()).unwrap(),
+        )?;
         write_atomic(&dir.join("fields.txt"), self.to_text().as_bytes())?;
         Ok(())
     }
@@ -167,7 +173,11 @@ fn redact(path: &str, example: String) -> String {
         let bare = part.trim_end_matches("[]");
         bare == "token" || bare.starts_with("key")
     });
-    if secret { "<redacted>".to_string() } else { example }
+    if secret {
+        "<redacted>".to_string()
+    } else {
+        example
+    }
 }
 
 fn truncate(text: &str, max: usize) -> String {
@@ -188,7 +198,13 @@ fn truncate(text: &str, max: usize) -> String {
 fn sanitize_state(state: &str) -> String {
     let mut name: String = state
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect();
     if name.is_empty() {
         name = "unknown".to_string();
@@ -233,7 +249,10 @@ mod tests {
         assert!(first.iter().any(|path| path == "map.clock_time"));
         assert!(first.iter().any(|path| path == "abilities[].name"));
         assert_eq!(catalog.fields["auth.token"].example, "<redacted>");
-        assert_eq!(game_state(&value), Some("DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"));
+        assert_eq!(
+            game_state(&value),
+            Some("DOTA_GAMERULES_STATE_GAME_IN_PROGRESS")
+        );
 
         let second = catalog.observe(&value);
         assert!(second.is_empty());
